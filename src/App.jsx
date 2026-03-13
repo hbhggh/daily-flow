@@ -158,16 +158,15 @@ export default function App() {
         <TabBar activeTab={tab} onTabChange={setTab} />
         <InstallPrompt />
 
-        {/* 同步状态指示 */}
-        {authUser && (
-          <div style={{
-            position: 'fixed', top: 'env(safe-area-inset-top, 8px)',
-            right: 12, fontSize: 9, color: 'var(--accent-green)',
-            opacity: 0.6, zIndex: 10, pointerEvents: 'none',
-          }}>
-            同步中
-          </div>
-        )}
+        {/* 同步状态指示 + 版本号 */}
+        <div style={{
+          position: 'fixed', top: 'env(safe-area-inset-top, 8px)',
+          right: 12, fontSize: 9,
+          color: authUser ? 'var(--accent-green)' : 'var(--text-muted)',
+          opacity: 0.6, zIndex: 10, pointerEvents: 'none',
+        }}>
+          {authUser ? '同步中' : ''} v2
+        </div>
 
         {celebrateAchievement && (
           <MilestoneModal

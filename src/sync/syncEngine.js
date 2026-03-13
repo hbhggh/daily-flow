@@ -135,7 +135,7 @@ function flushPushesSync() {
   // 直接使用 Supabase REST API + fetch keepalive
   // keepalive: true 让浏览器在页面卸载后仍然完成请求
   try {
-    const url = `${SUPABASE_URL}/rest/v1/user_data`
+    const url = `${SUPABASE_URL}/rest/v1/user_data?on_conflict=user_id,key`
     const token = _accessToken || SUPABASE_ANON_KEY
     const headers = {
       'Content-Type': 'application/json',
