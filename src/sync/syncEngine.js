@@ -16,6 +16,17 @@ let _lifecycleInstalled = false
 let _accessToken = null  // 缓存用户 JWT，供 keepalive fetch 使用
 let _lastPullHash = ''   // 上次拉取数据的 hash，避免无变化时重复 reload
 
+// 可观察的同步状态（UI 调试用）
+export const syncStatus = {
+  pollCount: 0,
+  pushCount: 0,
+  pullCount: 0,
+  realtimeCount: 0,
+  lastError: '',
+  lastPullTime: '',
+  changed: false,  // 上次 pull 是否检测到变化
+}
+
 function shouldSync(key) {
   return key.startsWith(SYNC_PREFIX) && !SKIP_KEYS.some((sk) => key === sk)
 }
@@ -106,8 +117,10 @@ async function flushPushes() {
         .in('key', deletes)
     }
 
+    syncStatus.pushCount++
     _onSyncEvent?.('pushed')
   } catch (e) {
+    syncStatus.lastError = 'push:' + e.message
     console.warn('[sync] push failed:', e.message)
   }
 }
@@ -172,7 +185,11 @@ async function pullAndReload() {
     .select('key, value, updated_at')
     .eq('user_id', _userId)
 
+  syncStatus.pollCount++
+  syncStatus.lastPullTime = new Date().toLocaleTimeString()
+
   if (error) {
+    syncStatus.lastError = 'poll:' + error.message
     console.warn('[sync] poll pull error:', error.message)
     return
   }
@@ -181,7 +198,12 @@ async function pullAndReload() {
 
   // 检查数据是否有变化
   const newHash = hashData(data)
-  if (newHash === _lastPullHash) return // 无变化，跳过
+  if (newHash === _lastPullHash) {
+    syncStatus.changed = false
+    return // 无变化，跳过
+  }
+  syncStatus.changed = true
+  syncStatus.pullCount++
   _lastPullHash = newHash
 
   // 写入 localStorage
@@ -296,10 +318,12 @@ function subscribeRealtime() {
 
         _skipSync = false
         _reloadStores?.()
+        syncStatus.realtimeCount++
         _onSyncEvent?.('realtime')
       }
     )
     .subscribe((status) => {
+      syncStatus.lastError = 'rt:' + status
       if (status === 'SUBSCRIBED') {
         console.log('[sync] realtime connected')
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {

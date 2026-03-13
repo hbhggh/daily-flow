@@ -14,7 +14,7 @@ import { useAchievements } from './stores/useAchievements'
 import { unlockAudio } from './utils/audio'
 import InstallPrompt from './components/InstallPrompt'
 import { supabase } from './sync/supabase'
-import { initSync, startSync, stopSync } from './sync/syncEngine'
+import { initSync, startSync, stopSync, syncStatus } from './sync/syncEngine'
 
 // Store 重新加载函数（同步引擎在收到云端变更后调用）
 function reloadAllStores() {
@@ -29,6 +29,7 @@ export default function App() {
   const [tab, setTab] = useState('pipeline')
   const [celebrateAchievement, setCelebrateAchievement] = useState(null)
   const [authUser, setAuthUser] = useState(null)
+  const [debugInfo, setDebugInfo] = useState('')
 
   // 初始化同步引擎（仅一次）
   useEffect(() => {
@@ -138,6 +139,19 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [])
 
+  // 同步调试面板（每秒更新）
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (authUser) {
+        setDebugInfo(
+          `poll:${syncStatus.pollCount} push:${syncStatus.pushCount} pull:${syncStatus.pullCount} rt:${syncStatus.realtimeCount} ` +
+          `chg:${syncStatus.changed ? 'Y' : 'N'} ${syncStatus.lastPullTime} ${syncStatus.lastError}`
+        )
+      }
+    }, 1000)
+    return () => clearInterval(id)
+  }, [authUser])
+
   // iOS 音频解锁
   useEffect(() => {
     const handler = () => {
@@ -158,15 +172,28 @@ export default function App() {
         <TabBar activeTab={tab} onTabChange={setTab} />
         <InstallPrompt />
 
-        {/* 同步状态指示 + 版本号 */}
-        <div style={{
-          position: 'fixed', top: 'env(safe-area-inset-top, 8px)',
-          right: 12, fontSize: 9,
-          color: authUser ? 'var(--accent-green)' : 'var(--text-muted)',
-          opacity: 0.6, zIndex: 10, pointerEvents: 'none',
-        }}>
-          {authUser ? '同步中' : ''} v4
-        </div>
+        {/* 同步调试条 */}
+        {authUser && debugInfo && (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, right: 0,
+            padding: '2px 8px',
+            paddingTop: 'env(safe-area-inset-top, 2px)',
+            background: 'rgba(0,0,0,0.85)',
+            color: '#4ade80', fontSize: 9, fontFamily: 'monospace',
+            zIndex: 9999, whiteSpace: 'nowrap', overflow: 'hidden',
+          }}>
+            v5 | {debugInfo}
+          </div>
+        )}
+        {!authUser && (
+          <div style={{
+            position: 'fixed', top: 'env(safe-area-inset-top, 8px)',
+            right: 12, fontSize: 9, color: 'var(--text-muted)',
+            opacity: 0.6, zIndex: 10, pointerEvents: 'none',
+          }}>
+            v5
+          </div>
+        )}
 
         {celebrateAchievement && (
           <MilestoneModal
