@@ -182,7 +182,7 @@ export default function App() {
             color: '#4ade80', fontSize: 9, fontFamily: 'monospace',
             zIndex: 9999, whiteSpace: 'nowrap', overflow: 'hidden',
           }}>
-            v5 | {debugInfo}
+            v6 | {debugInfo}
           </div>
         )}
         {!authUser && (
@@ -191,7 +191,7 @@ export default function App() {
             right: 12, fontSize: 9, color: 'var(--text-muted)',
             opacity: 0.6, zIndex: 10, pointerEvents: 'none',
           }}>
-            v5
+            v6
           </div>
         )}
 

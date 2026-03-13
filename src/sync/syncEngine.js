@@ -172,6 +172,7 @@ function hashData(data) {
 }
 
 // 从云端拉取 → 写入 localStorage → 如果有变化则 reload stores
+// 使用原生 fetch + 时间戳彻底绕过所有缓存层（iOS Safari / CDN / Proxy）
 async function pullAndReload() {
   if (!_userId) return
 
@@ -180,19 +181,34 @@ async function pullAndReload() {
     await flushPushes()
   }
 
-  const { data, error } = await supabase
-    .from('user_data')
-    .select('key, value, updated_at')
-    .eq('user_id', _userId)
+  let data = null
+  try {
+    const token = _accessToken || SUPABASE_ANON_KEY
+    // _t=timestamp 确保每次 URL 不同，任何缓存层都无法命中
+    const url = `${SUPABASE_URL}/rest/v1/user_data?select=key,value,updated_at&user_id=eq.${_userId}&_t=${Date.now()}`
+    const resp = await fetch(url, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${token}`,
+      },
+      cache: 'no-store',
+    })
+    if (!resp.ok) {
+      syncStatus.lastError = `poll:${resp.status}`
+      syncStatus.pollCount++
+      syncStatus.lastPullTime = new Date().toLocaleTimeString()
+      return
+    }
+    data = await resp.json()
+  } catch (e) {
+    syncStatus.lastError = 'poll:' + e.message
+    syncStatus.pollCount++
+    syncStatus.lastPullTime = new Date().toLocaleTimeString()
+    return
+  }
 
   syncStatus.pollCount++
   syncStatus.lastPullTime = new Date().toLocaleTimeString()
-
-  if (error) {
-    syncStatus.lastError = 'poll:' + error.message
-    console.warn('[sync] poll pull error:', error.message)
-    return
-  }
 
   if (!data) return
 
