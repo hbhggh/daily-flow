@@ -6,9 +6,10 @@ import { getDateStore } from '../stores/storage'
 import HeatMap from '../components/HeatMap'
 import AISheet from '../components/AISheet'
 import DataManager from '../components/DataManager'
+import AuthSheet from '../components/AuthSheet'
 import { todayKey } from '../utils/time'
 
-export default function ReviewPage() {
+export default function ReviewPage({ authUser, onAuthChange }) {
   const tasks = useDailyPipeline((s) => s.tasks)
   const transactions = usePoints((s) => s.transactions)
   const focusRecords = useTimer((s) => s.focusRecords)
@@ -18,6 +19,7 @@ export default function ReviewPage() {
   }, [focusRecords])
   const [showAI, setShowAI] = useState(false)
   const [showData, setShowData] = useState(false)
+  const [showAuth, setShowAuth] = useState(false)
 
   const today = todayKey()
   const savedReview = useMemo(() => {
@@ -166,6 +168,20 @@ export default function ReviewPage() {
         </div>
       )}
 
+      {/* 云端同步入口 */}
+      <button
+        onClick={() => setShowAuth(true)}
+        style={{
+          width: '100%', padding: '12px', borderRadius: 'var(--radius-sm)',
+          background: authUser ? 'var(--accent-green)10' : 'var(--accent-blue)10',
+          border: `1px solid ${authUser ? 'var(--accent-green)25' : 'var(--accent-blue)25'}`,
+          color: authUser ? 'var(--accent-green)' : 'var(--accent-blue)',
+          fontSize: 12, fontWeight: 600, marginBottom: 8,
+        }}
+      >
+        {authUser ? `☁ 已同步 · ${authUser.email}` : '☁ 登录开启云端同步'}
+      </button>
+
       {/* 数据管理入口 */}
       <button
         onClick={() => setShowData(true)}
@@ -180,6 +196,7 @@ export default function ReviewPage() {
 
       <AISheet open={showAI} mode="evening" onClose={() => setShowAI(false)} />
       <DataManager open={showData} onClose={() => setShowData(false)} />
+      <AuthSheet open={showAuth} user={authUser} onClose={() => setShowAuth(false)} onAuthChange={onAuthChange} />
     </div>
   )
 }
