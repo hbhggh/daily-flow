@@ -20,8 +20,10 @@ let _lastPullHash = ''   // 上次拉取数据的 hash，避免无变化时重�
 export const syncStatus = {
   pollCount: 0,
   pushCount: 0,
+  pushErr: 0,     // 推送失败次数
   pullCount: 0,
   realtimeCount: 0,
+  rtStatus: '',   // realtime 连接状态（独立于 lastError）
   lastError: '',
   lastPullTime: '',
   changed: false,  // 上次 pull 是否检测到变化
@@ -105,29 +107,42 @@ async function flushPushes() {
       const { error } = await supabase
         .from('user_data')
         .upsert(upserts, { onConflict: 'user_id,key' })
-      if (error) console.warn('[sync] push error:', error.message)
+      if (error) {
+        syncStatus.pushErr++
+        syncStatus.lastError = 'push:' + error.message
+        console.warn('[sync] push error:', error.message)
+        return
+      }
     }
 
     const deletes = batch.filter(([, v]) => v === null).map(([key]) => key)
     if (deletes.length > 0) {
-      await supabase
+      const { error } = await supabase
         .from('user_data')
         .delete()
         .eq('user_id', _userId)
         .in('key', deletes)
+      if (error) {
+        syncStatus.pushErr++
+        syncStatus.lastError = 'del:' + error.message
+        console.warn('[sync] delete error:', error.message)
+        return
+      }
     }
 
     syncStatus.pushCount++
     _onSyncEvent?.('pushed')
   } catch (e) {
+    syncStatus.pushErr++
     syncStatus.lastError = 'push:' + e.message
     console.warn('[sync] push failed:', e.message)
   }
 }
 
 // 同步推送（页面关闭时使用 fetch + keepalive）
+// 必须使用真正的 JWT access token，不能用 sb_publishable_ 格式的 anon key
 function flushPushesSync() {
-  if (_pendingPushes.size === 0 || !_userId) return
+  if (_pendingPushes.size === 0 || !_userId || !_accessToken) return
 
   const batch = [..._pendingPushes.entries()]
   _pendingPushes.clear()
@@ -146,11 +161,10 @@ function flushPushesSync() {
 
   try {
     const url = `${SUPABASE_URL}/rest/v1/user_data?on_conflict=user_id,key`
-    const token = _accessToken || SUPABASE_ANON_KEY
     const headers = {
       'Content-Type': 'application/json',
       'apikey': SUPABASE_ANON_KEY,
-      'Authorization': `Bearer ${token}`,
+      'Authorization': `Bearer ${_accessToken}`,
       'Prefer': 'resolution=merge-duplicates',
     }
 
@@ -172,7 +186,7 @@ function hashData(data) {
 }
 
 // 从云端拉取 → 写入 localStorage → 如果有变化则 reload stores
-// 使用原生 fetch + 时间戳彻底绕过所有缓存层（iOS Safari / CDN / Proxy）
+// 使用 Supabase 客户端（内部正确处理 auth），配合 noCacheFetch 防缓存
 async function pullAndReload() {
   if (!_userId) return
 
@@ -183,23 +197,18 @@ async function pullAndReload() {
 
   let data = null
   try {
-    const token = _accessToken || SUPABASE_ANON_KEY
-    // _t=timestamp 确保每次 URL 不同，任何缓存层都无法命中
-    const url = `${SUPABASE_URL}/rest/v1/user_data?select=key,value,updated_at&user_id=eq.${_userId}&_t=${Date.now()}`
-    const resp = await fetch(url, {
-      headers: {
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${token}`,
-      },
-      cache: 'no-store',
-    })
-    if (!resp.ok) {
-      syncStatus.lastError = `poll:${resp.status}`
+    const { data: rows, error } = await supabase
+      .from('user_data')
+      .select('key, value, updated_at')
+      .eq('user_id', _userId)
+
+    if (error) {
+      syncStatus.lastError = `poll:${error.message}`
       syncStatus.pollCount++
       syncStatus.lastPullTime = new Date().toLocaleTimeString()
       return
     }
-    data = await resp.json()
+    data = rows
   } catch (e) {
     syncStatus.lastError = 'poll:' + e.message
     syncStatus.pollCount++
@@ -250,6 +259,7 @@ async function pullAll() {
     .eq('user_id', _userId)
 
   if (error) {
+    syncStatus.lastError = 'init:' + error.message
     console.warn('[sync] pull error:', error.message)
     return false
   }
@@ -296,7 +306,10 @@ async function pushAllLocal() {
       const { error } = await supabase
         .from('user_data')
         .upsert(batch, { onConflict: 'user_id,key' })
-      if (error) console.warn('[sync] pushAll error:', error.message)
+      if (error) {
+        syncStatus.lastError = 'initPush:' + error.message
+        console.warn('[sync] pushAll error:', error.message)
+      }
     }
   }
 
@@ -339,10 +352,11 @@ function subscribeRealtime() {
       }
     )
     .subscribe((status) => {
-      syncStatus.lastError = 'rt:' + status
+      syncStatus.rtStatus = status
       if (status === 'SUBSCRIBED') {
         console.log('[sync] realtime connected')
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        syncStatus.lastError = 'rt:' + status
         console.warn('[sync] realtime failed:', status, '— using polling fallback')
       }
     })
@@ -372,6 +386,13 @@ export function initSync({ onSyncEvent, reloadStores }) {
   _reloadStores = reloadStores
   installProxy()
   installLifecycleListeners()
+
+  // 监听 token 刷新，保持 _accessToken 始终是最新的 JWT
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (session?.access_token) {
+      _accessToken = session.access_token
+    }
+  })
 }
 
 // 用户登录后调用

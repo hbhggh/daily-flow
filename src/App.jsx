@@ -144,7 +144,8 @@ export default function App() {
     const id = setInterval(() => {
       if (authUser) {
         setDebugInfo(
-          `poll:${syncStatus.pollCount} push:${syncStatus.pushCount} pull:${syncStatus.pullCount} rt:${syncStatus.realtimeCount} ` +
+          `poll:${syncStatus.pollCount} push:${syncStatus.pushCount} pErr:${syncStatus.pushErr} pull:${syncStatus.pullCount} ` +
+          `rt:${syncStatus.realtimeCount}(${syncStatus.rtStatus || '-'}) ` +
           `chg:${syncStatus.changed ? 'Y' : 'N'} ${syncStatus.lastPullTime} ${syncStatus.lastError}`
         )
       }
@@ -182,7 +183,7 @@ export default function App() {
             color: '#4ade80', fontSize: 9, fontFamily: 'monospace',
             zIndex: 9999, whiteSpace: 'nowrap', overflow: 'hidden',
           }}>
-            v7 | {debugInfo}
+            v8 | {debugInfo}
           </div>
         )}
         {!authUser && (
@@ -191,7 +192,7 @@ export default function App() {
             right: 12, fontSize: 9, color: 'var(--text-muted)',
             opacity: 0.6, zIndex: 10, pointerEvents: 'none',
           }}>
-            v7
+            v8
           </div>
         )}
 
