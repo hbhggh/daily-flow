@@ -2,16 +2,19 @@ import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase'
 
 const SYNC_PREFIX = 'dfp:'
 const SKIP_KEYS = ['dfp:api-key'] // 不同步敏感数据
+const POLL_INTERVAL = 8000 // 8 秒轮询一次（Realtime 的后备方案）
 
 let _skipSync = false   // 防止云端写入 → localStorage → 再推云端的循环
 let _channel = null
 let _userId = null
 let _pendingPushes = new Map()
 let _pushTimer = null
+let _pollTimer = null
 let _onSyncEvent = null // 回调：通知 UI 同步状态
 let _reloadStores = null
 let _lifecycleInstalled = false
 let _accessToken = null  // 缓存用户 JWT，供 keepalive fetch 使用
+let _lastPullHash = ''   // 上次拉取数据的 hash，避免无变化时重复 reload
 
 function shouldSync(key) {
   return key.startsWith(SYNC_PREFIX) && !SKIP_KEYS.some((sk) => key === sk)
@@ -37,37 +40,37 @@ function installProxy() {
   }
 }
 
-// 安装页面生命周期监听器（确保页面关闭前推送数据）
+// 安装页面生命周期监听器
 function installLifecycleListeners() {
   if (_lifecycleInstalled) return
   _lifecycleInstalled = true
 
-  // visibilitychange: 用户切换 tab 或切换 app 时触发
+  // visibilitychange: 切 tab / 切 app
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && _pendingPushes.size > 0) {
-      flushPushesSync()
+    if (document.visibilityState === 'hidden') {
+      // 页面隐藏 → 立即推送待发数据
+      if (_pendingPushes.size > 0) flushPushesSync()
+    } else if (document.visibilityState === 'visible' && _userId) {
+      // 页面恢复 → 立即拉取最新数据（另一台设备可能已修改）
+      pullAndReload()
     }
   })
 
-  // pagehide: 页面真正卸载前的最后机会（iOS Safari 更可靠）
+  // pagehide: 页面卸载前最后机会（iOS Safari 更可靠）
   window.addEventListener('pagehide', () => {
-    if (_pendingPushes.size > 0) {
-      flushPushesSync()
-    }
+    if (_pendingPushes.size > 0) flushPushesSync()
   })
 
   // beforeunload: 桌面浏览器刷新/关闭
   window.addEventListener('beforeunload', () => {
-    if (_pendingPushes.size > 0) {
-      flushPushesSync()
-    }
+    if (_pendingPushes.size > 0) flushPushesSync()
   })
 }
 
 function schedulePush(key, value) {
   _pendingPushes.set(key, value)
   clearTimeout(_pushTimer)
-  _pushTimer = setTimeout(flushPushes, 200) // 200ms 防抖（从 500ms 降低）
+  _pushTimer = setTimeout(flushPushes, 200) // 200ms 防抖
 }
 
 // 异步推送（正常流程）
@@ -78,7 +81,6 @@ async function flushPushes() {
   _pendingPushes.clear()
 
   try {
-    // Upsert 非 null 值
     const upserts = batch
       .filter(([, v]) => v !== null)
       .map(([key, value]) => ({
@@ -95,7 +97,6 @@ async function flushPushes() {
       if (error) console.warn('[sync] push error:', error.message)
     }
 
-    // 删除 null 值
     const deletes = batch.filter(([, v]) => v === null).map(([key]) => key)
     if (deletes.length > 0) {
       await supabase
@@ -112,8 +113,6 @@ async function flushPushes() {
 }
 
 // 同步推送（页面关闭时使用 fetch + keepalive）
-// 这是关键修复：iOS Safari 在 pagehide/visibilitychange 中
-// 无法可靠执行异步操作，但 fetch(keepalive:true) 能保证请求发出
 function flushPushesSync() {
   if (_pendingPushes.size === 0 || !_userId) return
 
@@ -132,8 +131,6 @@ function flushPushesSync() {
 
   if (upserts.length === 0) return
 
-  // 直接使用 Supabase REST API + fetch keepalive
-  // keepalive: true 让浏览器在页面卸载后仍然完成请求
   try {
     const url = `${SUPABASE_URL}/rest/v1/user_data?on_conflict=user_id,key`
     const token = _accessToken || SUPABASE_ANON_KEY
@@ -149,20 +146,62 @@ function flushPushesSync() {
       headers,
       body: JSON.stringify(upserts),
       keepalive: true,
-    }).catch(() => {
-      // 静默失败 — 页面已经在卸载了
-    })
+    }).catch(() => {})
   } catch {
     // 静默失败
   }
 }
 
-// 从云端拉取所有数据 → 写入 localStorage
+// 简单 hash 用于检测数据是否变化
+function hashData(data) {
+  if (!data || data.length === 0) return ''
+  return data.map(r => r.key + ':' + (r.updated_at || '')).sort().join('|')
+}
+
+// 从云端拉取 → 写入 localStorage → 如果有变化则 reload stores
+async function pullAndReload() {
+  if (!_userId) return
+
+  // 先推送待发数据
+  if (_pendingPushes.size > 0) {
+    await flushPushes()
+  }
+
+  const { data, error } = await supabase
+    .from('user_data')
+    .select('key, value, updated_at')
+    .eq('user_id', _userId)
+
+  if (error) {
+    console.warn('[sync] poll pull error:', error.message)
+    return
+  }
+
+  if (!data) return
+
+  // 检查数据是否有变化
+  const newHash = hashData(data)
+  if (newHash === _lastPullHash) return // 无变化，跳过
+  _lastPullHash = newHash
+
+  // 写入 localStorage
+  _skipSync = true
+  for (const row of data) {
+    if (row.value !== null) {
+      localStorage.setItem(row.key, row.value)
+    }
+  }
+  _skipSync = false
+
+  // 通知 stores 重新读取
+  _reloadStores?.()
+  _onSyncEvent?.('pulled')
+}
+
+// 从云端拉取所有数据 → 写入 localStorage（启动时用）
 async function pullAll() {
   if (!_userId) return false
 
-  // 关键修复：拉取前先把本地待推送的数据推上去
-  // 防止云端旧数据覆盖本地新修改
   if (_pendingPushes.size > 0) {
     await flushPushes()
   }
@@ -178,12 +217,12 @@ async function pullAll() {
   }
 
   if (!data || data.length === 0) {
-    // 云端无数据 → 首次登录，推送本地数据到云端
     await pushAllLocal()
     return true
   }
 
-  // 云端有数据 → 写入 localStorage
+  _lastPullHash = hashData(data)
+
   _skipSync = true
   for (const row of data) {
     if (row.value !== null) {
@@ -214,7 +253,6 @@ async function pushAllLocal() {
   }
 
   if (rows.length > 0) {
-    // 分批 upsert（Supabase 单次最多 ~1000 行）
     for (let i = 0; i < rows.length; i += 500) {
       const batch = rows.slice(i, i + 500)
       const { error } = await supabase
@@ -227,7 +265,7 @@ async function pushAllLocal() {
   _onSyncEvent?.('pushed')
 }
 
-// 订阅实时变更
+// 订阅实时变更（主要同步手段）
 function subscribeRealtime() {
   if (_channel) {
     supabase.removeChannel(_channel)
@@ -257,13 +295,35 @@ function subscribeRealtime() {
         }
 
         _skipSync = false
-
-        // 触发 store 重新读取
         _reloadStores?.()
         _onSyncEvent?.('realtime')
       }
     )
-    .subscribe()
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('[sync] realtime connected')
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn('[sync] realtime failed:', status, '— using polling fallback')
+      }
+    })
+}
+
+// 启动轮询（Realtime 的后备方案）
+// iOS Safari 的 WebSocket 可能不稳定，轮询保证数据最终一致
+function startPolling() {
+  stopPolling()
+  _pollTimer = setInterval(() => {
+    if (_userId && document.visibilityState === 'visible') {
+      pullAndReload()
+    }
+  }, POLL_INTERVAL)
+}
+
+function stopPolling() {
+  if (_pollTimer) {
+    clearInterval(_pollTimer)
+    _pollTimer = null
+  }
 }
 
 // 初始化同步引擎
@@ -278,7 +338,6 @@ export function initSync({ onSyncEvent, reloadStores }) {
 export async function startSync(userId) {
   _userId = userId
 
-  // 缓存 access_token（供 keepalive fetch 在页面关闭时使用）
   try {
     const { data: { session } } = await supabase.auth.getSession()
     _accessToken = session?.access_token || null
@@ -286,14 +345,13 @@ export async function startSync(userId) {
     _accessToken = null
   }
 
-  // 先把本地所有数据推到云端，确保不丢失
+  // 先推后拉
   await pushAllLocal()
-
-  // 再拉取云端数据（此时云端已包含本地数据）
   const success = await pullAll()
   if (success) {
     _reloadStores?.()
     subscribeRealtime()
+    startPolling()
   }
   return success
 }
@@ -302,6 +360,7 @@ export async function startSync(userId) {
 export function stopSync() {
   _userId = null
   _accessToken = null
+  stopPolling()
   if (_channel) {
     supabase.removeChannel(_channel)
     _channel = null

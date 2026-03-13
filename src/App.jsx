@@ -165,7 +165,7 @@ export default function App() {
           color: authUser ? 'var(--accent-green)' : 'var(--text-muted)',
           opacity: 0.6, zIndex: 10, pointerEvents: 'none',
         }}>
-          {authUser ? '同步中' : ''} v2
+          {authUser ? '同步中' : ''} v3
         </div>
 
         {celebrateAchievement && (
