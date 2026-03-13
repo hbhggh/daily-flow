@@ -105,4 +105,10 @@ export const usePoints = create((set, get) => ({
       set({ date: today, transactions: loadTransactions(today) })
     }
   },
+
+  // 强制从 localStorage 重新加载（云端同步后调用）
+  forceReload: () => {
+    const { date } = get()
+    set({ transactions: loadTransactions(date) })
+  },
 }))

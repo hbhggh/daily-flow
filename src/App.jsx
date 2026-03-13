@@ -18,8 +18,8 @@ import { initSync, startSync, stopSync } from './sync/syncEngine'
 
 // Store 重新加载函数（同步引擎在收到云端变更后调用）
 function reloadAllStores() {
-  useDailyPipeline.getState().reload()
-  usePoints.getState().reload()
+  useDailyPipeline.getState().forceReload()
+  usePoints.getState().forceReload()
   useTimer.persist?.rehydrate?.()
   useProjects.persist?.rehydrate?.()
   useAchievements.persist?.rehydrate?.()

@@ -97,4 +97,10 @@ export const useDailyPipeline = create((set, get) => ({
       set({ date: today, tasks: loadTasks(today) })
     }
   },
+
+  // 强制从 localStorage 重新加载（云端同步后调用）
+  forceReload: () => {
+    const { date } = get()
+    set({ tasks: loadTasks(date) })
+  },
 }))
