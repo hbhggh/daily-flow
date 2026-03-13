@@ -2,7 +2,7 @@ import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase'
 
 const SYNC_PREFIX = 'dfp:'
 const SKIP_KEYS = ['dfp:api-key'] // 不同步敏感数据
-const POLL_INTERVAL = 8000 // 8 秒轮询一次（Realtime 的后备方案）
+const POLL_INTERVAL = 5000 // 5 秒轮询一次（Realtime 的后备方案）
 
 let _skipSync = false   // 防止云端写入 → localStorage → 再推云端的循环
 let _channel = null
