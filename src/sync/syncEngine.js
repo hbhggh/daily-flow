@@ -1,4 +1,4 @@
-import { supabase } from './supabase'
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase'
 
 const SYNC_PREFIX = 'dfp:'
 const SKIP_KEYS = ['dfp:api-key'] // 不同步敏感数据
@@ -10,6 +10,8 @@ let _pendingPushes = new Map()
 let _pushTimer = null
 let _onSyncEvent = null // 回调：通知 UI 同步状态
 let _reloadStores = null
+let _lifecycleInstalled = false
+let _accessToken = null  // 缓存用户 JWT，供 keepalive fetch 使用
 
 function shouldSync(key) {
   return key.startsWith(SYNC_PREFIX) && !SKIP_KEYS.some((sk) => key === sk)
@@ -35,12 +37,40 @@ function installProxy() {
   }
 }
 
+// 安装页面生命周期监听器（确保页面关闭前推送数据）
+function installLifecycleListeners() {
+  if (_lifecycleInstalled) return
+  _lifecycleInstalled = true
+
+  // visibilitychange: 用户切换 tab 或切换 app 时触发
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && _pendingPushes.size > 0) {
+      flushPushesSync()
+    }
+  })
+
+  // pagehide: 页面真正卸载前的最后机会（iOS Safari 更可靠）
+  window.addEventListener('pagehide', () => {
+    if (_pendingPushes.size > 0) {
+      flushPushesSync()
+    }
+  })
+
+  // beforeunload: 桌面浏览器刷新/关闭
+  window.addEventListener('beforeunload', () => {
+    if (_pendingPushes.size > 0) {
+      flushPushesSync()
+    }
+  })
+}
+
 function schedulePush(key, value) {
   _pendingPushes.set(key, value)
   clearTimeout(_pushTimer)
-  _pushTimer = setTimeout(flushPushes, 500) // 500ms 防抖
+  _pushTimer = setTimeout(flushPushes, 200) // 200ms 防抖（从 500ms 降低）
 }
 
+// 异步推送（正常流程）
 async function flushPushes() {
   if (_pendingPushes.size === 0 || !_userId) return
 
@@ -81,13 +111,65 @@ async function flushPushes() {
   }
 }
 
+// 同步推送（页面关闭时使用 fetch + keepalive）
+// 这是关键修复：iOS Safari 在 pagehide/visibilitychange 中
+// 无法可靠执行异步操作，但 fetch(keepalive:true) 能保证请求发出
+function flushPushesSync() {
+  if (_pendingPushes.size === 0 || !_userId) return
+
+  const batch = [..._pendingPushes.entries()]
+  _pendingPushes.clear()
+  clearTimeout(_pushTimer)
+
+  const upserts = batch
+    .filter(([, v]) => v !== null)
+    .map(([key, value]) => ({
+      user_id: _userId,
+      key,
+      value,
+      updated_at: new Date().toISOString(),
+    }))
+
+  if (upserts.length === 0) return
+
+  // 直接使用 Supabase REST API + fetch keepalive
+  // keepalive: true 让浏览器在页面卸载后仍然完成请求
+  try {
+    const url = `${SUPABASE_URL}/rest/v1/user_data`
+    const token = _accessToken || SUPABASE_ANON_KEY
+    const headers = {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${token}`,
+      'Prefer': 'resolution=merge-duplicates',
+    }
+
+    fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(upserts),
+      keepalive: true,
+    }).catch(() => {
+      // 静默失败 — 页面已经在卸载了
+    })
+  } catch {
+    // 静默失败
+  }
+}
+
 // 从云端拉取所有数据 → 写入 localStorage
 async function pullAll() {
   if (!_userId) return false
 
+  // 关键修复：拉取前先把本地待推送的数据推上去
+  // 防止云端旧数据覆盖本地新修改
+  if (_pendingPushes.size > 0) {
+    await flushPushes()
+  }
+
   const { data, error } = await supabase
     .from('user_data')
-    .select('key, value')
+    .select('key, value, updated_at')
     .eq('user_id', _userId)
 
   if (error) {
@@ -189,11 +271,25 @@ export function initSync({ onSyncEvent, reloadStores }) {
   _onSyncEvent = onSyncEvent
   _reloadStores = reloadStores
   installProxy()
+  installLifecycleListeners()
 }
 
 // 用户登录后调用
 export async function startSync(userId) {
   _userId = userId
+
+  // 缓存 access_token（供 keepalive fetch 在页面关闭时使用）
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    _accessToken = session?.access_token || null
+  } catch {
+    _accessToken = null
+  }
+
+  // 先把本地所有数据推到云端，确保不丢失
+  await pushAllLocal()
+
+  // 再拉取云端数据（此时云端已包含本地数据）
   const success = await pullAll()
   if (success) {
     _reloadStores?.()
@@ -205,6 +301,7 @@ export async function startSync(userId) {
 // 用户登出时调用
 export function stopSync() {
   _userId = null
+  _accessToken = null
   if (_channel) {
     supabase.removeChannel(_channel)
     _channel = null
